@@ -1,3 +1,4 @@
+-- TODO: figure out how to deal with asks
 CREATE TABLE IF NOT EXISTS posts (
     type                    TEXT NOT NULL,
     is_blocks_post_format   TINYINT NOT NULL,
@@ -26,6 +27,7 @@ CREATE TABLE IF NOT EXISTS posts (
 
 CREATE TABLE IF NOT EXISTS blogs (
     name                        TEXT PRIMARY KEY NOT NULL,
+    last_offset                 INTEGER,
     title                       TEXT NOT NULL,
     description                 TEXT NOT NULL,
     url                         TEXT NOT NULL,

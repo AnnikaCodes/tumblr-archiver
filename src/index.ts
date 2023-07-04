@@ -149,7 +149,11 @@ const insertTrailItem = db.prepare(
     '   source_post_id, blog_name, post_id, content_raw, content, is_root_item' +
     ') VALUES (?, ?, ?, ?, ?, ?)'
 );
+
 const savedBlogCount = db.prepare('SELECT count(*) FROM blogs WHERE name = ?').pluck(true);
+const getLastOffset: SQLite.Statement = db.prepare('SELECT last_offset FROM blogs WHERE name = ?').pluck(true);
+const setLastOffset = db.prepare('UPDATE blogs SET last_offset = ? WHERE name = ?');
+
 const savePost = db.transaction((post: Post) => {
     insertPost.run(
         post.type,
@@ -174,7 +178,6 @@ const savePost = db.transaction((post: Post) => {
         insertTag.run(post.id, tag);
     }
     for (const trailItem of post.trail) {
-        console.log(trailItem);
         insertTrailItem.run(
             post.id,
             trailItem.blog.name,
@@ -187,17 +190,18 @@ const savePost = db.transaction((post: Post) => {
 });
 
 const api = createClient({
-    // consumer_key: process.env.TUMBLR_CONSUMER_KEY,
-    // consumer_secret: process.env.TUMBLR_CONSUMER_SECRET,
+    consumer_key: process.env.TUMBLR_CONSUMER_KEY,
+    consumer_secret: process.env.TUMBLR_CONSUMER_SECRET,
     returnPromises: true,
 });
 
+
 for (const blog of blogs) {
     (async () => {
-        let postsSaved = 0;
+        let offset = getLastOffset.get(blog) as number || 0;
         let response;
         do {
-            response = await fetchPostsFromAPI(blog, postsSaved);
+            response = await fetchPostsFromAPI(blog, offset);
             if (!response) return;
             saveBlog(response.blog);
             for (const post of response.posts) {
@@ -205,7 +209,7 @@ for (const blog of blogs) {
                     // this prevents foreign key troubles
                     const name = trailItem.blog.name;
                     if (!blogIsSaved(name)) {
-                        const blogInfo = await fetchPostsFromAPI(name, postsSaved);
+                        const blogInfo = await fetchPostsFromAPI(name, offset);
                         const blogData: Blog = blogInfo ? blogInfo.blog : {
                             name,
                             title: `*** ${name} was inaccessible to tumblr-archiver on ${new Date().toISOString()} ***`,
@@ -222,9 +226,10 @@ for (const blog of blogs) {
                     }
                 }
                 savePost(post);
-                postsSaved++;
+                offset++;
             }
-        } while (postsSaved < (response.total_posts - 1)); // idk why it's -1
+            setLastOffset.run(offset, blog);
+        } while (offset < (response.total_posts - 1)); // idk why it's -1
     })().catch(console.error);
 }
 
@@ -240,13 +245,15 @@ async function fetchPostsFromAPI(blogName: string, offset: number, depth = 0): P
             });
         });
     } catch (e) {
-        if ((e as any).toString().includes('404 Not Found')) {
-            console.error(`Blog not found: ${blogName}`);
+        const errorString = (e as any).toString();
+        if (errorString.includes('404 Not Found') || errorString.includes('403 Forbidden')) {
+            console.error(`Blog inaccessible: ${blogName}`);
             return null;
         }
         if ((e as any).toString().includes('429 Limit Exceeded')) {
             console.error(`Rate limit exceeded on blog: ${blogName}`);
-            const delay = (2 ** depth) * 20;
+            if (depth > 5) throw new Error('Rate limit exceeded too many times; try again tomorrow');
+            const delay = 15 * 60;
             console.error(`Waiting ${delay} seconds...`);
             await new Promise(resolve => setTimeout(resolve, delay * 1000));
             return fetchPostsFromAPI(blogName, offset, depth + 1);
